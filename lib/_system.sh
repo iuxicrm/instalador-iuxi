@@ -45,15 +45,23 @@ system_git_clone() {
 
   sleep 2
 
-  # Solicita username e token
+  # Solicita username e token (para repositórios privados)
   read -p "Digite seu GitHub username: " github_username
   read -s -p "Digite seu GitHub token: " github_token
   echo ""
 
-  # Constrói link com autenticação
+  # Para GitHub, evita colocar username:token na URL
+  # e usa header Authorization, como no update_instance_from_github
   if [[ $link_git == *"github.com"* ]]; then
-    repo_url=$(echo "$link_git" | sed -E "s#https://#https://${github_username}:${github_token}@#")
-    sudo -u deploy git clone "$repo_url" /home/deploy/${instancia_add}/
+    sudo -u deploy bash -lc '
+      set -u
+      link_git_inner="'"$link_git"'"
+      github_username_inner="'"$github_username"'"
+      github_token_inner="'"$github_token"'"
+
+      auth_header=$(printf "Authorization: Basic %s" "$(printf "%s:%s" "$github_username_inner" "$github_token_inner" | base64)")
+      git -c http.extraHeader="$auth_header" clone "$link_git_inner" "/home/deploy/'"${instancia_add}"'/"
+    '
   else
     sudo -u deploy git clone "$link_git" /home/deploy/${instancia_add}/
   fi
@@ -91,6 +99,183 @@ EOF
   sleep 2
 }
 
+
+#######################################
+# realiza backup completo da instância
+# (banco de dados + arquivos em /home/deploy)
+# Arguments:
+#   Usa variável global: empresa_atualizar
+#######################################
+backup_instance() {
+  print_banner
+  printf "${YELLOW} 💻 Realizando backup da instância ${empresa_atualizar} (banco de dados + arquivos)...${GRAY_LIGHT}"
+  printf "\n\n"
+
+  sleep 2
+
+  # Garante zip instalado e gera backup em /root/backups-iuxi
+  sudo su - root <<EOF
+  set -u
+
+  if ! command -v zip >/dev/null 2>&1; then
+    apt-get update -y
+    apt-get install -y zip
+  fi
+
+  if ! command -v pg_dump >/dev/null 2>&1; then
+    apt-get install -y postgresql-client || true
+  fi
+
+  BACKUP_BASE_DIR="/root/backups-iuxi"
+  mkdir -p "\$BACKUP_BASE_DIR"
+
+  TIMESTAMP=\$(date +%Y%m%d-%H%M%S)
+  DB_DUMP="/tmp/${empresa_atualizar}-db-\$TIMESTAMP.sql"
+
+  # Dump do banco de dados da instância
+  if command -v pg_dump >/dev/null 2>&1; then
+    su - postgres -c "pg_dump ${empresa_atualizar} > '\$DB_DUMP'" || true
+  else
+    echo "pg_dump não encontrado. Backup do banco não será gerado."
+  fi
+
+  cd /home/deploy
+
+  BACKUP_NAME="${empresa_atualizar}-\${TIMESTAMP}.zip"
+
+  # Backup apenas do código e configs, ignorando pastas de build/cache e arquivos públicos
+  # (node_modules, dist, build, public de frontend/backend)
+  if [ -f "\$DB_DUMP" ]; then
+    zip -r "\$BACKUP_BASE_DIR/\$BACKUP_NAME" "${empresa_atualizar}" "\$DB_DUMP" \
+      -x "${empresa_atualizar}/node_modules/*" \
+         "${empresa_atualizar}/frontend/node_modules/*" \
+         "${empresa_atualizar}/frontend/build/*" \
+         "${empresa_atualizar}/frontend/public/*" \
+         "${empresa_atualizar}/backend/node_modules/*" \
+         "${empresa_atualizar}/backend/dist/*" \
+         "${empresa_atualizar}/backend/public/*"
+    rm -f "\$DB_DUMP"
+  else
+    zip -r "\$BACKUP_BASE_DIR/\$BACKUP_NAME" "${empresa_atualizar}" \
+      -x "${empresa_atualizar}/node_modules/*" \
+         "${empresa_atualizar}/frontend/node_modules/*" \
+         "${empresa_atualizar}/frontend/build/*" \
+         "${empresa_atualizar}/frontend/public/*" \
+         "${empresa_atualizar}/backend/node_modules/*" \
+         "${empresa_atualizar}/backend/dist/*" \
+         "${empresa_atualizar}/backend/public/*"
+  fi
+EOF
+
+  sleep 2
+
+  print_banner
+  printf "${YELLOW} 💾 Backup da instância ${empresa_atualizar} concluído e salvo em /root/backups-iuxi.${GRAY_LIGHT}"
+  printf "\n\n"
+
+  sleep 2
+}
+
+
+#######################################
+# atualiza código da instância a partir
+# do GitHub e recompila backend/frontend
+# Arguments:
+#   Usa variável global: empresa_atualizar
+#######################################
+update_instance_from_github() {
+  print_banner
+  printf "${YELLOW} 💻 Atualizando código da instância ${empresa_atualizar} a partir do GitHub...${GRAY_LIGHT}"
+  printf "\n\n"
+
+  sleep 2
+
+  # Como o repositório é privado, usamos usuário padrão iuxicrm
+  github_username="iuxicrm"
+
+  printf "${YELLOW} 💻 Digite a senha do GitHub para o usuário ${github_username} (a senha ficará invisível):${GRAY_LIGHT}\n"
+  printf "\n"
+  read -s github_token
+  echo ""
+
+  sleep 1
+
+  # Limpeza forçada de node_modules, dist/build e package-lock.json como root
+  sudo su - root <<EOF
+  set -u
+
+  BACKEND_DIR="/home/deploy/${empresa_atualizar}/backend"
+  FRONTEND_DIR="/home/deploy/${empresa_atualizar}/frontend"
+
+  if [ -d "\$BACKEND_DIR" ]; then
+    rm -rf "\$BACKEND_DIR/node_modules" "\$BACKEND_DIR/dist" "\$BACKEND_DIR/package-lock.json"
+    chown -R deploy:deploy "\$BACKEND_DIR" || true
+  fi
+
+  if [ -d "\$FRONTEND_DIR" ]; then
+    rm -rf "\$FRONTEND_DIR/node_modules" "\$FRONTEND_DIR/build" "\$FRONTEND_DIR/package-lock.json"
+    chown -R deploy:deploy "\$FRONTEND_DIR" || true
+  fi
+EOF
+
+  sleep 1
+
+  sudo su - deploy <<EOF
+  set -u
+
+  if [ ! -d "/home/deploy/${empresa_atualizar}" ]; then
+    echo "Diretório /home/deploy/${empresa_atualizar} não encontrado."
+    exit 1
+  fi
+
+  cd /home/deploy/${empresa_atualizar}
+
+  # Evita erro de "dubious ownership" do Git
+  git config --global --add safe.directory "/home/deploy/${empresa_atualizar}" || true
+
+  if [ -d ".git" ]; then
+    # Descarta quaisquer alterações locais e arquivos não rastreados
+    git reset --hard HEAD
+    git clean -fd
+
+    # Atualiza usando o mesmo padrão do script externo:
+    # git pull https://usuario:senha@github.com/iuxicrm/iuxi.git
+    git pull "https://${github_username}:${github_token}@github.com/iuxicrm/iuxi.git"
+  else
+    echo "A instância /home/deploy/${empresa_atualizar} não é um repositório git. Atualização abortada."
+    exit 1
+  fi
+
+  # Atualiza backend
+  if [ -d "/home/deploy/${empresa_atualizar}/backend" ]; then
+    cd /home/deploy/${empresa_atualizar}/backend
+    npm install
+    npm run build
+    npx sequelize db:migrate
+  fi
+
+  # Atualiza frontend
+  if [ -d "/home/deploy/${empresa_atualizar}/frontend" ]; then
+    cd /home/deploy/${empresa_atualizar}/frontend
+    npm install
+    npm run build
+  fi
+
+  # Reinicia todas as aplicações no PM2
+  if command -v pm2 >/dev/null 2>&1; then
+    pm2 restart all || true
+    pm2 save || true
+  fi
+EOF
+
+  sleep 2
+
+  print_banner
+  printf "${YELLOW} ✅ Atualização da instância ${empresa_atualizar} concluída com sucesso!${GRAY_LIGHT}"
+  printf "\n\n"
+
+  sleep 2
+}
 
 
 #######################################

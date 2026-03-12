@@ -91,10 +91,61 @@ get_empresa_delete() {
 
 get_empresa_atualizar() {
   
-  print_banner
-  printf "${YELLOW} 💻 Digite o nome da Instancia/Empresa que deseja Atualizar (Digite o mesmo nome de quando instalou):${GRAY_LIGHT}"
-  printf "\n\n"
-  read -p "> " empresa_atualizar
+  # Descobrir automaticamente as instâncias instaladas em /home/deploy
+  instances=()
+
+  if [ -d "/home/deploy" ]; then
+    for dir in /home/deploy/*/; do
+      if [ -d "$dir" ] && [ -d "$dir/frontend" ] && [ -d "$dir/backend" ]; then
+        instances+=("$(basename "$dir")")
+      fi
+    done
+  fi
+
+  if [ "${#instances[@]}" -eq 0 ]; then
+    print_banner
+    printf "${YELLOW} ⚠ Nenhuma instância Whaticket foi encontrada em /home/deploy.${GRAY_LIGHT}\n"
+    printf "\n"
+    printf "   Verifique se existe ao menos uma instalação antes de tentar atualizar.\n"
+    printf "\n"
+    printf "   Pressione ENTER para voltar ao menu.\n"
+    read -r
+    return 1
+  fi
+
+  while true; do
+    print_banner
+    printf "${YELLOW} 💻 Selecione a Instancia/Empresa que deseja Atualizar:${GRAY_LIGHT}\n"
+    printf "\n"
+
+    for i in "${!instances[@]}"; do
+      idx=$((i + 1))
+      printf "   [%d] %s\n" "$idx" "${instances[$i]}"
+    done
+
+    printf "\n"
+    printf "   Digite o número da instância desejada e pressione ENTER.\n"
+    printf "\n"
+    read -p "> " instancia_opcao
+
+    # Validar se é número
+    if ! [[ "$instancia_opcao" =~ ^[0-9]+$ ]]; then
+      printf "\n${YELLOW}   Opção inválida. Digite apenas o número da instância.${GRAY_LIGHT}\n"
+      sleep 2
+      continue
+    fi
+
+    instancia_index=$((instancia_opcao - 1))
+
+    if [ "$instancia_index" -lt 0 ] || [ "$instancia_index" -ge "${#instances[@]}" ]; then
+      printf "\n${YELLOW}   Opção fora do intervalo. Tente novamente.${GRAY_LIGHT}\n"
+      sleep 2
+      continue
+    fi
+
+    empresa_atualizar="${instances[$instancia_index]}"
+    break
+  done
 }
 
 get_empresa_bloquear() {
@@ -169,9 +220,12 @@ get_urls() {
 }
 
 software_update() {
-  get_empresa_atualizar
-  frontend_update
-  backend_update
+  if ! get_empresa_atualizar; then
+    return
+  fi
+
+  backup_instance
+  update_instance_from_github
 }
 
 software_delete() {
