@@ -45,23 +45,24 @@ system_git_clone() {
 
   sleep 2
 
-  # Solicita username e token (para repositórios privados)
-  read -p "Digite seu GitHub username: " github_username
-  read -s -p "Digite seu GitHub token: " github_token
-  echo ""
+  # Solicita username e token (obrigatório para repositórios GitHub)
+  if [[ "${link_git}" == *"github.com"* ]]; then
+    while true; do
+      printf "${YELLOW} 💻 Repositório GitHub detectado. Informe usuário e token:${GRAY_LIGHT}\n\n"
+      read -p "Digite seu GitHub username: " github_username
+      read -s -p "Digite seu GitHub token: " github_token
+      echo ""
+      if [[ -n "${github_username}" && -n "${github_token}" ]]; then
+        break
+      fi
+      printf "${YELLOW}   Username e token não podem ficar vazios. Tente novamente.${GRAY_LIGHT}\n\n"
+    done
+  fi
 
-  # Para GitHub, evita colocar username:token na URL
-  # e usa header Authorization, como no update_instance_from_github
-  if [[ $link_git == *"github.com"* ]]; then
-    sudo -u deploy bash -lc '
-      set -u
-      link_git_inner="'"$link_git"'"
-      github_username_inner="'"$github_username"'"
-      github_token_inner="'"$github_token"'"
-
-      auth_header=$(printf "Authorization: Basic %s" "$(printf "%s:%s" "$github_username_inner" "$github_token_inner" | base64)")
-      git -c http.extraHeader="$auth_header" clone "$link_git_inner" "/home/deploy/'"${instancia_add}"'/"
-    '
+  # Constrói link com autenticação
+  if [[ "${link_git}" == *"github.com"* ]]; then
+    repo_url=$(echo "$link_git" | sed -E "s#https://#https://${github_username}:${github_token}@#")
+    sudo -u deploy git clone "$repo_url" /home/deploy/${instancia_add}/
   else
     sudo -u deploy git clone "$link_git" /home/deploy/${instancia_add}/
   fi
@@ -143,27 +144,22 @@ backup_instance() {
 
   BACKUP_NAME="${empresa_atualizar}-\${TIMESTAMP}.zip"
 
-  # Backup apenas do código e configs, ignorando pastas de build/cache e arquivos públicos
+  # Backup apenas do código e configs, ignorando pastas de build/cache
   # (node_modules, dist, build, public de frontend/backend)
+  EXCLUDES=(
+    "${empresa_atualizar}/node_modules/*"
+    "${empresa_atualizar}/frontend/node_modules/*"
+    "${empresa_atualizar}/frontend/build/*"
+    "${empresa_atualizar}/frontend/public/*"
+    "${empresa_atualizar}/backend/node_modules/*"
+    "${empresa_atualizar}/backend/dist/*"
+  )
+
   if [ -f "\$DB_DUMP" ]; then
-    zip -r "\$BACKUP_BASE_DIR/\$BACKUP_NAME" "${empresa_atualizar}" "\$DB_DUMP" \
-      -x "${empresa_atualizar}/node_modules/*" \
-         "${empresa_atualizar}/frontend/node_modules/*" \
-         "${empresa_atualizar}/frontend/build/*" \
-         "${empresa_atualizar}/frontend/public/*" \
-         "${empresa_atualizar}/backend/node_modules/*" \
-         "${empresa_atualizar}/backend/dist/*" \
-         "${empresa_atualizar}/backend/public/*"
+    zip -r "\$BACKUP_BASE_DIR/\$BACKUP_NAME" "${empresa_atualizar}" "\$DB_DUMP" -x "\${EXCLUDES[@]}"
     rm -f "\$DB_DUMP"
   else
-    zip -r "\$BACKUP_BASE_DIR/\$BACKUP_NAME" "${empresa_atualizar}" \
-      -x "${empresa_atualizar}/node_modules/*" \
-         "${empresa_atualizar}/frontend/node_modules/*" \
-         "${empresa_atualizar}/frontend/build/*" \
-         "${empresa_atualizar}/frontend/public/*" \
-         "${empresa_atualizar}/backend/node_modules/*" \
-         "${empresa_atualizar}/backend/dist/*" \
-         "${empresa_atualizar}/backend/public/*"
+    zip -r "\$BACKUP_BASE_DIR/\$BACKUP_NAME" "${empresa_atualizar}" -x "\${EXCLUDES[@]}"
   fi
 EOF
 
@@ -193,30 +189,10 @@ update_instance_from_github() {
   # Como o repositório é privado, usamos usuário padrão iuxicrm
   github_username="iuxicrm"
 
-  printf "${YELLOW} 💻 Digite a senha do GitHub para o usuário ${github_username} (a senha ficará invisível):${GRAY_LIGHT}\n"
+  printf "${YELLOW} 💻 Informe o token de acesso do GitHub para o usuário ${github_username}:${GRAY_LIGHT}\n"
   printf "\n"
-  read -s github_token
+  read -s -p "Token: " github_token
   echo ""
-
-  sleep 1
-
-  # Limpeza forçada de node_modules, dist/build e package-lock.json como root
-  sudo su - root <<EOF
-  set -u
-
-  BACKEND_DIR="/home/deploy/${empresa_atualizar}/backend"
-  FRONTEND_DIR="/home/deploy/${empresa_atualizar}/frontend"
-
-  if [ -d "\$BACKEND_DIR" ]; then
-    rm -rf "\$BACKEND_DIR/node_modules" "\$BACKEND_DIR/dist" "\$BACKEND_DIR/package-lock.json"
-    chown -R deploy:deploy "\$BACKEND_DIR" || true
-  fi
-
-  if [ -d "\$FRONTEND_DIR" ]; then
-    rm -rf "\$FRONTEND_DIR/node_modules" "\$FRONTEND_DIR/build" "\$FRONTEND_DIR/package-lock.json"
-    chown -R deploy:deploy "\$FRONTEND_DIR" || true
-  fi
-EOF
 
   sleep 1
 
@@ -230,33 +206,53 @@ EOF
 
   cd /home/deploy/${empresa_atualizar}
 
-  # Evita erro de "dubious ownership" do Git
-  git config --global --add safe.directory "/home/deploy/${empresa_atualizar}" || true
+  # Backup dos .env de produção (nunca excluir nem sobrescrever)
+  BACKEND_ENV_BACKUP=""
+  FRONTEND_ENV_BACKUP=""
+  if [ -f "/home/deploy/${empresa_atualizar}/backend/.env" ]; then
+    BACKEND_ENV_BACKUP=\$(mktemp)
+    cp -a "/home/deploy/${empresa_atualizar}/backend/.env" "\$BACKEND_ENV_BACKUP"
+  fi
+  if [ -f "/home/deploy/${empresa_atualizar}/frontend/.env" ]; then
+    FRONTEND_ENV_BACKUP=\$(mktemp)
+    cp -a "/home/deploy/${empresa_atualizar}/frontend/.env" "\$FRONTEND_ENV_BACKUP"
+  fi
 
   if [ -d ".git" ]; then
-    # Descarta quaisquer alterações locais e arquivos não rastreados
-    git reset --hard HEAD
-    git clean -fd
-
-    # Atualiza usando o mesmo padrão do script externo:
-    # git pull https://usuario:senha@github.com/iuxicrm/iuxi.git
-    git pull "https://${github_username}:${github_token}@github.com/iuxicrm/iuxi.git"
+    current_remote=\$(git remote get-url origin 2>/dev/null || echo "")
+    if [ -n "\$current_remote" ] && [[ "\$current_remote" == https://*github.com* ]]; then
+      new_remote=\$(echo "\$current_remote" | sed -E "s#https://#https://${github_username}:${github_token}@#")
+      git remote set-url origin "\$new_remote"
+    fi
+    git pull
   else
     echo "A instância /home/deploy/${empresa_atualizar} não é um repositório git. Atualização abortada."
     exit 1
   fi
 
-  # Atualiza backend
+  # Restaura .env do backend e frontend (preserva produção)
+  if [ -n "\$BACKEND_ENV_BACKUP" ] && [ -f "\$BACKEND_ENV_BACKUP" ]; then
+    cp -a "\$BACKEND_ENV_BACKUP" "/home/deploy/${empresa_atualizar}/backend/.env"
+    rm -f "\$BACKEND_ENV_BACKUP"
+  fi
+  if [ -n "\$FRONTEND_ENV_BACKUP" ] && [ -f "\$FRONTEND_ENV_BACKUP" ]; then
+    cp -a "\$FRONTEND_ENV_BACKUP" "/home/deploy/${empresa_atualizar}/frontend/.env"
+    rm -f "\$FRONTEND_ENV_BACKUP"
+  fi
+
+  # Atualiza backend (nunca remove .env)
   if [ -d "/home/deploy/${empresa_atualizar}/backend" ]; then
     cd /home/deploy/${empresa_atualizar}/backend
+    rm -rf node_modules dist package-lock.json
     npm install
     npm run build
     npx sequelize db:migrate
   fi
 
-  # Atualiza frontend
+  # Atualiza frontend (nunca remove .env)
   if [ -d "/home/deploy/${empresa_atualizar}/frontend" ]; then
     cd /home/deploy/${empresa_atualizar}/frontend
+    rm -rf node_modules build package-lock.json
     npm install
     npm run build
   fi
