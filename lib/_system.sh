@@ -186,7 +186,7 @@ update_instance_from_github() {
 
   sleep 2
 
-  # Como o repositório é privado, usamos usuário padrão iuxicrm
+  # Usuário fixo do GitHub para o repositório privado
   github_username="iuxicrm"
 
   printf "${YELLOW} 💻 Informe o token de acesso do GitHub para o usuário ${github_username}:${GRAY_LIGHT}\n"
@@ -206,35 +206,69 @@ update_instance_from_github() {
 
   cd /home/deploy/${empresa_atualizar}
 
-  # Backup dos .env de produção (nunca excluir nem sobrescrever)
+  # Backup dos .env de produção (backend e frontend)
   BACKEND_ENV_BACKUP=""
   FRONTEND_ENV_BACKUP=""
+
   if [ -f "/home/deploy/${empresa_atualizar}/backend/.env" ]; then
     BACKEND_ENV_BACKUP=\$(mktemp)
     cp -a "/home/deploy/${empresa_atualizar}/backend/.env" "\$BACKEND_ENV_BACKUP"
   fi
+
   if [ -f "/home/deploy/${empresa_atualizar}/frontend/.env" ]; then
     FRONTEND_ENV_BACKUP=\$(mktemp)
     cp -a "/home/deploy/${empresa_atualizar}/frontend/.env" "\$FRONTEND_ENV_BACKUP"
   fi
 
-  if [ -d ".git" ]; then
-    current_remote=\$(git remote get-url origin 2>/dev/null || echo "")
-    if [ -n "\$current_remote" ] && [[ "\$current_remote" == https://*github.com* ]]; then
-      new_remote=\$(echo "\$current_remote" | sed -E "s#https://#https://${github_username}:${github_token}@#")
-      git remote set-url origin "\$new_remote"
-    fi
-    git pull
-  else
+  # Garante que é um repositório git
+  if [ ! -d ".git" ]; then
     echo "A instância /home/deploy/${empresa_atualizar} não é um repositório git. Atualização abortada."
     exit 1
   fi
+
+  # Obtém a URL atual do origin (mesmo que esteja "suja" com credenciais duplicadas).
+  # Se não existir remote, cria um apontando para o repositório padrão do IUXI.
+  current_remote=\$(git remote get-url origin 2>/dev/null || echo "")
+
+  if [ -z "\$current_remote" ]; then
+    # Nenhum remote configurado: usamos diretamente o repositório padrão.
+    repo_path="iuxicrm/iuxi.git"
+  else
+    # Para qualquer URL que contenha github.com, sempre extraímos apenas o caminho do repositório.
+    # Ex:
+    #   https://github.com/iuxicrm/iuxi.git
+    #   https://iuxicrm:token@github.com/iuxicrm/iuxi.git
+    #   https://iuxicrm:token@iuxicrm:token@github.com/iuxicrm/iuxi.git
+    # Em todos os casos, repo_path vira: iuxicrm/iuxi.git
+    if echo "\$current_remote" | grep -q "github.com"; then
+      repo_path=\$(echo "\$current_remote" | sed -E 's#^https://.*github.com/##')
+    else
+      # Remote existe mas não é GitHub: força uso do repositório padrão do IUXI.
+      repo_path="iuxicrm/iuxi.git"
+    fi
+  fi
+
+  if [ -z "\$repo_path" ]; then
+    echo "Não foi possível determinar o caminho do repositório remoto."
+    exit 1
+  fi
+
+  # Monta URL final com usuário + token apenas UMA vez
+  new_remote="https://${github_username}:${github_token}@github.com/\$repo_path"
+  git remote set-url origin "\$new_remote"
+
+  # Descobre o branch atual; se não conseguir, usa main
+  current_branch=\$(git branch --show-current 2>/dev/null || echo "main")
+
+  # Puxa as últimas alterações do repositório remoto
+  git pull origin "\$current_branch"
 
   # Restaura .env do backend e frontend (preserva produção)
   if [ -n "\$BACKEND_ENV_BACKUP" ] && [ -f "\$BACKEND_ENV_BACKUP" ]; then
     cp -a "\$BACKEND_ENV_BACKUP" "/home/deploy/${empresa_atualizar}/backend/.env"
     rm -f "\$BACKEND_ENV_BACKUP"
   fi
+
   if [ -n "\$FRONTEND_ENV_BACKUP" ] && [ -f "\$FRONTEND_ENV_BACKUP" ]; then
     cp -a "\$FRONTEND_ENV_BACKUP" "/home/deploy/${empresa_atualizar}/frontend/.env"
     rm -f "\$FRONTEND_ENV_BACKUP"
