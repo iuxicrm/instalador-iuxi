@@ -152,6 +152,7 @@ backup_instance() {
     "${empresa_atualizar}/frontend/build/*"
     "${empresa_atualizar}/frontend/public/*"
     "${empresa_atualizar}/backend/node_modules/*"
+    "${empresa_atualizar}/backend/public/*"
     "${empresa_atualizar}/backend/dist/*"
   )
 
@@ -260,8 +261,14 @@ update_instance_from_github() {
   # Descobre o branch atual; se não conseguir, usa main
   current_branch=\$(git branch --show-current 2>/dev/null || echo "main")
 
-  # Puxa as últimas alterações do repositório remoto
-  git pull origin "\$current_branch"
+  # Puxa as últimas alterações do repositório remoto (de forma automática).
+  # Para evitar "Aborting" por mudanças locais em QUALQUER arquivo trackeado,
+  # descartamos o working tree com reset hard para o estado do remote.
+  # Observação: isso não remove arquivos não-trackeados (ex.: uploads em public),
+  # e evita apagar as empresas/arquivos que você não quer perder.
+  git fetch origin "\$current_branch"
+  git reset --hard "origin/\$current_branch"
+  git pull --ff-only origin "\$current_branch" || true
 
   # Restaura .env do backend e frontend (preserva produção)
   if [ -n "\$BACKEND_ENV_BACKUP" ] && [ -f "\$BACKEND_ENV_BACKUP" ]; then
