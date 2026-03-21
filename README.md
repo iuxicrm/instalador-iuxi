@@ -13,7 +13,7 @@ sudo apt upgrade -y
 PROXIMO COMANDO:
 
 ```bash
-sudo apt install -y git && git clone https://github.com/plwdesign/instalador-iuxi && sudo chmod -R 777 instalador-iuxi && cd instalador-iuxi && sudo ./install_primaria
+sudo apt install -y git && git clone https://github.com/iuxicrm/instalador-iuxi && sudo chmod -R 777 instalador-iuxi && cd instalador-iuxi && sudo ./install_primaria
 ```
 
 ACESSANDO DIRETORIO DO INSTALADOR & INICIANDO INSTALAÇÕES ADICIONAIS (USAR ESTE COMANDO PARA SEGUNDA OU MAIS INSTALAÇÃO:
