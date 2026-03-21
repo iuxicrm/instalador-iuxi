@@ -9,67 +9,63 @@
 #######################################
 detect_transcreve_dir() {
   local instancia_name=$1
-  local found_dir=""
-  
-  # Primeiro, procurar dentro da instância selecionada (se fornecida)
-  if [ -n "$instancia_name" ] && [ -d "/home/deploy/${instancia_name}" ]; then
-    local instance_path="/home/deploy/${instancia_name}/transcreveAPI"
-    if [ -d "$instance_path" ]; then
-      if [ -f "$instance_path/Dockerfile" ] || [ -f "$instance_path/docker-compose.yaml" ] || [ -f "$instance_path/docker-compose.yml" ]; then
-        found_dir="$instance_path"
-        echo "$found_dir"
-        return 0
-      fi
+  local target_dir="/home/deploy/${instancia_name}/transcreveAPI"
+
+  if [ -n "$instancia_name" ] && [ -d "$target_dir" ]; then
+    if [ -f "$target_dir/Dockerfile" ] || [ -f "$target_dir/docker-compose.yaml" ] || [ -f "$target_dir/docker-compose.yml" ] || [ -f "$target_dir/package.json" ] || [ -f "$target_dir/requirements.txt" ]; then
+      echo "$target_dir"
+      return 0
     fi
   fi
-  
-  # Lista de locais possíveis para procurar (sem referências a nomes específicos de instâncias)
-  local search_paths=(
-    "/home/deploy/transcreveAPI"
-    "/opt/transcreveAPI"
-    "/usr/local/transcreveAPI"
-  )
-  
-  # Procurar nos caminhos comuns
-  for path in "${search_paths[@]}"; do
-    if [ -d "$path" ]; then
-      # Verificar se tem arquivos essenciais (Dockerfile ou docker-compose.yaml)
-      if [ -f "$path/Dockerfile" ] || [ -f "$path/docker-compose.yaml" ] || [ -f "$path/docker-compose.yml" ]; then
-        found_dir="$path"
+
+  echo ""
+}
+
+ensure_transcreve_source() {
+  local instancia_name=$1
+  local target_dir="/home/deploy/${instancia_name}/transcreveAPI"
+
+  if [ -d "$target_dir" ] && { [ -f "$target_dir/Dockerfile" ] || [ -f "$target_dir/docker-compose.yaml" ] || [ -f "$target_dir/docker-compose.yml" ] || [ -f "$target_dir/package.json" ] || [ -f "$target_dir/requirements.txt" ]; }; then
+    echo "$target_dir"
+    return 0
+  fi
+
+  echo ""
+  return 1
+}
+
+find_available_transcreve_port() {
+  local start_port=${1:-5001}
+  local end_port=${2:-5100}
+  local avoid_ports=(22 25 80 443 3306 5432 6379 8080 3000 3001 3250 4000 4001 5000 8000 8081 9000)
+  local port
+  local avoid_port
+
+  for port in $(seq "$start_port" "$end_port"); do
+    local skip=false
+    for avoid_port in "${avoid_ports[@]}"; do
+      if [ "$port" -eq "$avoid_port" ]; then
+        skip=true
         break
       fi
+    done
+    if [ "$skip" = true ]; then
+      continue
     fi
+
+    if command -v ss >/dev/null 2>&1; then
+      ss -tuln 2>/dev/null | grep -q ":${port} " && continue
+    elif command -v netstat >/dev/null 2>&1; then
+      netstat -tuln 2>/dev/null | grep -q ":${port} " && continue
+    else
+      timeout 1 bash -c "echo > /dev/tcp/127.0.0.1/${port}" >/dev/null 2>&1 && continue
+    fi
+
+    echo "$port"
+    return 0
   done
-  
-  # Se não encontrou, procurar recursivamente em /home/deploy
-  if [ -z "$found_dir" ] && [ -d "/home/deploy" ]; then
-    # Primeiro, procurar diretamente em /home/deploy (não dentro de subdiretórios de instâncias)
-    if [ -d "/home/deploy/transcreveAPI" ]; then
-      if [ -f "/home/deploy/transcreveAPI/Dockerfile" ] || [ -f "/home/deploy/transcreveAPI/docker-compose.yaml" ] || [ -f "/home/deploy/transcreveAPI/docker-compose.yml" ]; then
-        found_dir="/home/deploy/transcreveAPI"
-      fi
-    fi
-    
-    # Se ainda não encontrou, procurar recursivamente por diretórios com "transcreve" no nome
-    if [ -z "$found_dir" ]; then
-      while IFS= read -r -d '' dir; do
-        # Pular se estiver dentro de um diretório de instância (verificar se o diretório pai tem frontend/backend)
-        dir_parent=$(dirname "$dir")
-        if [ -d "$dir_parent/frontend" ] && [ -d "$dir_parent/backend" ]; then
-          # Está dentro de uma instância, mas se for a instância selecionada, já foi verificado antes
-          continue
-        fi
-        
-        # Verificar se tem arquivos essenciais
-        if [ -f "$dir/Dockerfile" ] || [ -f "$dir/docker-compose.yaml" ] || [ -f "$dir/docker-compose.yml" ]; then
-          found_dir="$dir"
-          break
-        fi
-      done < <(find /home/deploy -maxdepth 3 -type d -iname "*transcreve*" -print0 2>/dev/null)
-    fi
-  fi
-  
-  echo "$found_dir"
+
+  return 1
 }
 
 #######################################
@@ -127,26 +123,18 @@ install_transcreve_api() {
   
   sleep 2
   
-  # Detectar automaticamente o diretório do transcreveAPI (passando o nome da instância)
-  printf "${YELLOW}🔍 Detectando diretório do transcreveAPI para a instância ${instancia_name}...${NC}\n"
-  TRANSCREVE_DIR=$(detect_transcreve_dir "$instancia_name")
-  
+  printf "${YELLOW}🔍 Verificando pasta local do transcreveAPI dentro da instância ${instancia_name}...${NC}\n"
+  TRANSCREVE_DIR=$(ensure_transcreve_source "$instancia_name")
+
   if [ -z "$TRANSCREVE_DIR" ] || [ ! -d "$TRANSCREVE_DIR" ]; then
-    printf "${RED}❌ Diretório do transcreveAPI não encontrado!${NC}\n"
-    printf "${YELLOW}O script procurou nos seguintes locais:${NC}\n"
-    printf "  - /home/deploy/${instancia_name}/transcreveAPI (dentro da instância)\n"
-    printf "  - /home/deploy/transcreveAPI (compartilhado)\n"
-    printf "  - /opt/transcreveAPI\n"
-    printf "  - /usr/local/transcreveAPI\n"
-    printf "  - Recursivamente em /home/deploy/*\n"
-    printf "\n"
-    printf "${YELLOW}Por favor, verifique se o diretório do transcreveAPI existe e contém um Dockerfile.${NC}\n"
+    printf "${RED}❌ Pasta /home/deploy/${instancia_name}/transcreveAPI não encontrada ou incompleta!${NC}\n"
+    printf "${YELLOW}O transcreveAPI deve existir dentro da própria instância, na pasta transcreveAPI.${NC}\n"
     printf "${YELLOW}Pressione ENTER para continuar...${NC}\n"
     read -r
     return 1
   fi
-  
-  printf "${GREEN}✓ Diretório do transcreveAPI encontrado: ${TRANSCREVE_DIR}${NC}\n"
+
+  printf "${GREEN}✓ Diretório local do transcreveAPI encontrado: ${TRANSCREVE_DIR}${NC}\n"
   
   cd "$TRANSCREVE_DIR"
   
@@ -209,48 +197,16 @@ EOF
   
   # Encontrar porta disponível
   printf "${YELLOW}🔍 Procurando porta disponível...${NC}\n"
-  
-  FOUND_PORT=""
-  AVOID_PORTS=(22 25 80 443 3306 5432 6379 8080 3000 3001 3250 5000 8000 8081 9000)
-  
-  is_port_in_use() {
-    local port=$1
-    if command -v ss &> /dev/null; then
-      ss -tuln 2>/dev/null | grep -q ":$port "
-    elif command -v netstat &> /dev/null; then
-      netstat -tuln 2>/dev/null | grep -q ":$port "
-    else
-      timeout 1 bash -c "echo > /dev/tcp/localhost/$port" 2>/dev/null
-    fi
-  }
-  
-  should_avoid_port() {
-    local port=$1
-    for avoid_port in "${AVOID_PORTS[@]}"; do
-      if [ "$port" -eq "$avoid_port" ]; then
-        return 0
-      fi
-    done
-    return 1
-  }
-  
-  for port in {5001..5100}; do
-    if should_avoid_port $port; then
-      continue
-    fi
-    if ! is_port_in_use $port; then
-      FOUND_PORT=$port
-      break
-    fi
-  done
-  
+
+  FOUND_PORT=$(find_available_transcreve_port 5001 5100)
+
   if [ -z "$FOUND_PORT" ]; then
     printf "${RED}❌ Não foi possível encontrar uma porta disponível (tentou 5001-5100)${NC}\n"
     printf "${YELLOW}Pressione ENTER para continuar...${NC}\n"
     read -r
     return 1
   fi
-  
+
   printf "${GREEN}✓ Porta disponível encontrada: ${FOUND_PORT}${NC}\n"
   
   # Criar diretórios necessários

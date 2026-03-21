@@ -67,6 +67,9 @@ frontend_node_build
 frontend_start_pm2
 frontend_nginx_setup
 
+# transcreve related
+install_transcreve_api "${instancia_add}"
+
 # network related
 #system_nginx_conf
 system_nginx_restart

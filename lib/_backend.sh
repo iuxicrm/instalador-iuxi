@@ -96,6 +96,8 @@ GERENCIANET_PIX_KEY=chave pix gerencianet
  MAIL_FROM="seusite@email.com"
  MAIL_PORT="465"
 
+TRANSCREVE_API_URL=
+
 [-]EOF
 EOF
 

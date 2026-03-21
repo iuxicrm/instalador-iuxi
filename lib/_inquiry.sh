@@ -253,70 +253,20 @@ software_dominio() {
 }
 
 inquiry_options() {
-  
   print_banner
   printf "${YELLOW} 💻 Bem vindo(a) ao Gerenciador IUXI, Selecione abaixo a proxima ação!${GRAY_LIGHT}"
   printf "\n\n"
-  printf "   [0] Listar instalações e portas ocupadas\n"
   printf "   [1] Instalar whaticket\n"
   printf "   [2] Atualizar whaticket\n"
-  printf "   [3] Deletar Whaticket\n"
-  printf "   [4] Bloquear Whaticket\n"
-  printf "   [5] Desbloquear Whaticket\n"
-  printf "   [6] Alter. dominio Whaticket\n"
-  printf "   [7] Instalar transcreveAPI\n"
-  printf "   [8] Remover transcreveAPI\n"
-  printf "   [9] Listar containers Docker ativos\n"
   printf "\n"
   read -p "> " option
 
   case "${option}" in
-    0) 
-      list_instalacoes
-      inquiry_options
-      ;;
-
     1) get_urls ;;
-
-    2) 
-      software_update 
+    2)
+      software_update
       exit
       ;;
-
-    3) 
-      software_delete 
-      exit
-      ;;
-    4) 
-      software_bloquear 
-      exit
-      ;;
-    5) 
-      software_desbloquear 
-      exit
-      ;;
-    6) 
-      software_dominio 
-      exit
-      ;;
-
-    7) 
-      software_transcreve_install
-      inquiry_options
-      ;;
-
-    8) 
-      software_transcreve_uninstall
-      inquiry_options
-      ;;
-
-    9) 
-      list_docker_containers
-      inquiry_options
-      ;;        
-
     *) exit ;;
   esac
 }
-
-
